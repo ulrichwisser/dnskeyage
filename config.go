@@ -15,6 +15,7 @@ import (
 
 type Configuration struct {
 	Dryrun       bool
+	Verbose      bool
 	Source       string
 	Resolvers    stringslice
 	Zones        stringslice
@@ -42,7 +43,8 @@ func parseCmdline() *Configuration {
 
 	// define and parse command line arguments
 	flag.StringVar(&conffilename, "conf", "", "Filename to read configuration from")
-	flag.BoolVar(&config.Dryrun, "dryrun", false, "Print results instead of writing to InfluxDB")
+	flag.BoolVar(&config.Dryrun, "dryrun", false, "Nothing will be written to InfluxDB")
+	flag.BoolVar(&config.Verbose, "v", true, "Print lots of runtime information")
 	flag.Var(&config.Zones, "zone", "zone to compute dnskey age for")
 	flag.Var(&config.Resolvers, "resolver", "resolver name or ip")
 	flag.StringVar(&config.InfluxServer, "influxServer", "", "Server with InfluxDB running")
@@ -112,11 +114,8 @@ func joinConfig(oldConf *Configuration, newConf *Configuration) (config *Configu
 
 	// we have two configs, join them
 	config = &Configuration{}
-	if newConf.Dryrun || oldConf.Dryrun {
-		config.Dryrun = true
-	} else {
-		config.Dryrun = false
-	}
+	config.Dryrun = newConf.Dryrun || oldConf.Dryrun
+	config.Verbose = newConf.Verbose || oldConf.Verbose
 	if len(newConf.Zones) > 0 {
 		config.Zones = newConf.Zones
 	} else {

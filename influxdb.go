@@ -30,15 +30,16 @@ type key struct {
 	age       int64
 }
 
-func parseRow(row models.Row) (*key, error) {
+func parseRow(config *Configuration, row models.Row) (*key, error) {
 	key := &key{}
 	t, err := time.Parse(time.RFC3339, row.Values[0][0].(string))
 	if err != nil {
-		log.Println("Could not convert to time ", row.Values[0][0].(string), "\n", err)
+		if config.Verbose {
+			log.Println("Could not convert to time ", row.Values[0][0].(string), "\n", err)
+		}
 		return nil, err
 	}
 	key.timestamp = t.Unix()
-	log.Println("timestamp ", key.timestamp)
 	key.domain = row.Values[0][1].(string)
 	key.algorithm = row.Values[0][2].(string)
 	if val, err := strconv.ParseUint(row.Values[0][3].(string), 10, 16); err == nil {
@@ -53,7 +54,7 @@ func parseRow(row models.Row) (*key, error) {
 	return key, nil
 }
 
-func parseResponse(response *influxdb.Response) ([]key, error) {
+func parseResponse(config *Configuration, response *influxdb.Response) ([]key, error) {
 	// first check for errors
 	if response.Error() != nil {
 		return nil, response.Error()
@@ -68,14 +69,16 @@ func parseResponse(response *influxdb.Response) ([]key, error) {
 			log.Fatalf("Result error!\n%s", result.Err)
 		}
 		for _, msg := range result.Messages {
-			log.Printf("Result message: %s %s", msg.Level, msg.Text)
+			if config.Verbose {
+				log.Printf("Result message: %s %s", msg.Level, msg.Text)
+			}
 		}
-		log.Println("getAge: series ", len(result.Series))
 		for _, row := range result.Series {
-			log.Println("ROW: ", row)
-			key, err := parseRow(row)
+			key, err := parseRow(config, row)
 			if err != nil {
-				log.Println("Error in row. ", err)
+				if config.Verbose {
+					log.Println("Error in row.\n", "Row ", row, "\n", err)
+				}
 				return nil, err
 			}
 			keys = append(keys, *key)
@@ -95,20 +98,17 @@ func getOldKeys(config *Configuration, database influxdb.Client, zone string) ([
 	if err != nil {
 		return nil, err
 	}
-	return parseResponse(response)
+	return parseResponse(config, response)
 }
 
 func getAge(oldkeys []key, zone string, algorithm string, keytag uint16) (age int64) {
-	log.Println("getAge")
 	age = 0
 	for _, oldkey := range oldkeys {
-		log.Println("getAge: ", oldkey)
 		if oldkey.domain == zone && oldkey.algorithm == algorithm && oldkey.keytag == keytag {
 			age = time.Now().Unix() - oldkey.timestamp
 			break
 		}
 	}
-	log.Println("getAge: age ", age)
 	return age
 }
 
@@ -124,13 +124,13 @@ func saveToInflux(config *Configuration, database influxdb.Client, zone string, 
 
 	// collect line data
 	for _, rr := range newkeys {
+		// compute more human friendly formats
 		var algorithm string
 		if alg, ok := dns.AlgorithmToString[rr.Algorithm]; ok {
 			algorithm = alg
 		} else {
 			algorithm = fmt.Sprintf("%d", rr.Algorithm)
 		}
-		keytag := rr.KeyTag()
 		keytype := fmt.Sprintf("%d", rr.Flags)
 		if rr.Flags == 257 {
 			keytype = "KSK"
@@ -138,19 +138,16 @@ func saveToInflux(config *Configuration, database influxdb.Client, zone string, 
 		if rr.Flags == 256 {
 			keytype = "ZSK"
 		}
-		age := getAge(oldkeys, zone, algorithm, keytag)
-
-		//log.Printf("DnskeyAge,domain=%s,algorithm=%s,keytag=%d,keytype=%s age=%di", zone, algorithm, keytag, keytype, age)
 
 		tags := map[string]string{
 			"domain":    zone,
 			"algorithm": algorithm,
-			"keytag":    fmt.Sprintf("%d", keytag),
+			"keytag":    fmt.Sprintf("%d", rr.KeyTag()),
 			"keytype":   keytype,
 		}
 
 		fields := map[string]interface{}{
-			"age": age,
+			"age": getAge(oldkeys, zone, algorithm, rr.KeyTag()),
 		}
 
 		pt, err := influxdb.NewPoint(
@@ -163,19 +160,26 @@ func saveToInflux(config *Configuration, database influxdb.Client, zone string, 
 			log.Fatal(err)
 		}
 		bp.AddPoint(pt)
+	}
 
+	// Verobse
+	if config.Verbose {
+		for _, p := range bp.Points() {
+			log.Println("Point: ", p)
+		}
 	}
 
 	// save to database
 	if config.Dryrun {
-		log.Println("DRYRUN! Nothing will be written to InfluxDB.")
-		for _, p := range bp.Points() {
-			log.Println("Point: ", p)
+		if config.Verbose {
+			log.Println("DRYRUN! Nothing will be written to InfluxDB.")
 		}
 	} else {
 		if err := database.Write(bp); err != nil {
 			log.Fatal(err)
 		}
+		if config.Verbose {
+			log.Println("Successfully written to InfluxDB")
+		}
 	}
-
 }
